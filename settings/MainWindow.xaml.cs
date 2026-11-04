@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.Win32;
 using Windows.Graphics;
 using Windows.UI;
 
@@ -15,6 +16,7 @@ public sealed partial class MainWindow : Window
 {
     const string Section = "ahm";
     const uint WM_RELOAD = 0x8000 + 2;
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     static readonly string Ini = Path.Combine(AppContext.BaseDirectory, "ahm.ini");
 
     [DllImport("kernel32", CharSet = CharSet.Unicode)]
@@ -56,6 +58,8 @@ public sealed partial class MainWindow : Window
         OpacitySlider.Value = Get("Opacity", 100);
         OutlineSwitch.IsOn = Get("Outline", 1) != 0;
         VisibleSwitch.IsOn = Get("Visible", 1) != 0;
+        using (var run = Registry.CurrentUser.OpenSubKey(RunKey))
+            StartupSwitch.IsOn = run?.GetValue("ahm") != null;
         OffXBox.Value = Get("OffsetX", 0);
         OffYBox.Value = Get("OffsetY", 0);
     }
@@ -78,6 +82,14 @@ public sealed partial class MainWindow : Window
         Put("Visible", VisibleSwitch.IsOn ? 1 : 0);
         if (!double.IsNaN(OffXBox.Value)) Put("OffsetX", (int)OffXBox.Value);
         if (!double.IsNaN(OffYBox.Value)) Put("OffsetY", (int)OffYBox.Value);
+
+        using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
+        {
+            if (StartupSwitch.IsOn)
+                run.SetValue("ahm", $"\"{Path.Combine(AppContext.BaseDirectory, "ahm.exe")}\"");
+            else
+                run.DeleteValue("ahm", throwOnMissingValue: false);
+        }
 
         IntPtr overlay = FindWindow("ahm_overlay", null);
         if (overlay != IntPtr.Zero) PostMessage(overlay, WM_RELOAD, IntPtr.Zero, IntPtr.Zero);

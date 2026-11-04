@@ -1,11 +1,11 @@
-/*
+﻿/*
  * ahm - tiny crosshair overlay.
  *
  * One layered, click-through, topmost window holding a pre-rendered 32-bit
  * premultiplied bitmap. The image is drawn only when a setting changes, so
  * the process is completely idle (blocked in GetMessage) the rest of the time.
- * Control lives in the notification-area icon (left click toggles, right
- * click opens the menu) and the global hotkey Ctrl+Alt+X.
+ * The tray icon opens the WinUI settings app on left click and offers "Quit"
+ * on right click; Ctrl+Alt+X toggles the crosshair globally.
  */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
@@ -16,7 +16,6 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
-#include <commdlg.h>
 #include <math.h>
 #include <wchar.h>
 
@@ -25,20 +24,7 @@
 #define ID_HOTKEY 1
 #define INI_SEC L"ahm"
 
-enum {
-    CMD_TOGGLE = 1,
-    CMD_SETTINGS = 2,
-    CMD_SHAPE = 10,     /* 10..12  cross, dot, circle */
-    CMD_COLOR = 20,     /* 20 + palette index */
-    CMD_CUSTOM = 40,
-    CMD_OUTLINE = 50,
-    CMD_AUTOSTART = 60,
-    CMD_EXIT = 99,
-    CMD_SIZE = 100,
-    CMD_THICK = 200,
-    CMD_GAP = 300,
-    CMD_OPACITY = 400
-};
+enum { CMD_QUIT = 1 };
 
 typedef struct {
     int shapes;         /* bit0 cross, bit1 dot, bit2 circle */
@@ -46,20 +32,6 @@ typedef struct {
     int size, thick, gap, opacity;
     int outline, offx, offy, visible;
 } Cfg;
-
-static const struct { const WCHAR *name; COLORREF c; } PAL[] = {
-    { L"Red", RGB(255, 40, 40) },     { L"Green", RGB(40, 255, 60) },
-    { L"Cyan", RGB(0, 230, 255) },    { L"Yellow", RGB(255, 235, 0) },
-    { L"Magenta", RGB(255, 0, 220) }, { L"Orange", RGB(255, 140, 0) },
-    { L"White", RGB(255, 255, 255) },
-};
-#define NPAL ((int)(sizeof PAL / sizeof PAL[0]))
-
-static const int SIZES[] = { 4, 6, 8, 10, 12, 16, 20, 24, 32, 48 };
-static const int THICKS[] = { 1, 2, 3, 4, 5, 6 };
-static const int GAPS[] = { 0, 2, 4, 6, 8, 12, 16 };
-static const int OPACS[] = { 25, 50, 75, 100 };
-#define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static Cfg g_c;
 static HWND g_wnd;
@@ -72,7 +44,6 @@ static NOTIFYICONDATAW g_nid;
 static UINT g_taskbarMsg;
 static WCHAR g_ini[MAX_PATH];
 static WCHAR g_exe[MAX_PATH];
-static COLORREF g_cust[16];
 
 /* ---------------------------------------------------------------- config */
 
@@ -98,53 +69,13 @@ static void LoadCfg(void)
     g_c.color &= 0xFFFFFF;
 }
 
-static void PutInt(const WCHAR *key, int v)
+/* The hotkey is the only thing the overlay changes itself; everything else
+ * is owned by the settings app. */
+static void SaveVisible(void)
 {
-    WCHAR b[16];
-    wsprintfW(b, L"%d", v);
-    WritePrivateProfileStringW(INI_SEC, key, b, g_ini);
-}
-
-static void SaveCfg(void)
-{
-    PutInt(L"Shapes", g_c.shapes);
-    PutInt(L"Color", (int)g_c.color);
-    PutInt(L"Size", g_c.size);
-    PutInt(L"Thickness", g_c.thick);
-    PutInt(L"Gap", g_c.gap);
-    PutInt(L"Opacity", g_c.opacity);
-    PutInt(L"Outline", g_c.outline);
-    PutInt(L"OffsetX", g_c.offx);
-    PutInt(L"OffsetY", g_c.offy);
-    PutInt(L"Visible", g_c.visible);
-}
-
-/* ------------------------------------------------------------- autostart */
-
-#define RUNKEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-
-static int AutostartOn(void)
-{
-    HKEY k;
-    LONG r;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUNKEY, 0, KEY_QUERY_VALUE, &k)) return 0;
-    r = RegQueryValueExW(k, L"ahm", NULL, NULL, NULL, NULL);
-    RegCloseKey(k);
-    return r == ERROR_SUCCESS;
-}
-
-static void SetAutostart(int on)
-{
-    HKEY k;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUNKEY, 0, KEY_SET_VALUE, &k)) return;
-    if (on) {
-        WCHAR v[MAX_PATH + 2];
-        int n = wsprintfW(v, L"\"%s\"", g_exe);
-        RegSetValueExW(k, L"ahm", 0, REG_SZ, (const BYTE *)v, (DWORD)((n + 1) * sizeof(WCHAR)));
-    } else {
-        RegDeleteValueW(k, L"ahm");
-    }
-    RegCloseKey(k);
+    WCHAR b[4];
+    wsprintfW(b, L"%d", g_c.visible);
+    WritePrivateProfileStringW(INI_SEC, L"Visible", b, g_ini);
 }
 
 /* ------------------------------------------------------------- rendering */
@@ -306,54 +237,19 @@ static void TrayRefreshIcon(void)
     if (old) DestroyIcon(old);
 }
 
-static HMENU NumMenu(int base, const int *v, int n, int cur, const WCHAR *unit)
-{
-    HMENU m = CreatePopupMenu();
-    int i;
-    for (i = 0; i < n; i++) {
-        WCHAR b[24];
-        wsprintfW(b, L"%d%s", v[i], unit);
-        AppendMenuW(m, MF_STRING | (v[i] == cur ? MF_CHECKED : 0), base + i, b);
-    }
-    return m;
-}
-
+/* Right click: a single "Quit" entry. All configuration lives in the settings app. */
 static void ShowMenu(void)
 {
-    HMENU m = CreatePopupMenu(), shape = CreatePopupMenu(), col = CreatePopupMenu();
+    HMENU m = CreatePopupMenu();
     POINT p;
-    int i, custom = 1;
 
-    AppendMenuW(shape, MF_STRING | ((g_c.shapes & 1) ? MF_CHECKED : 0), CMD_SHAPE, L"Cross");
-    AppendMenuW(shape, MF_STRING | ((g_c.shapes & 2) ? MF_CHECKED : 0), CMD_SHAPE + 1, L"Dot");
-    AppendMenuW(shape, MF_STRING | ((g_c.shapes & 4) ? MF_CHECKED : 0), CMD_SHAPE + 2, L"Circle");
-
-    for (i = 0; i < NPAL; i++) {
-        int on = PAL[i].c == g_c.color;
-        custom &= !on;
-        AppendMenuW(col, MF_STRING | (on ? MF_CHECKED : 0), CMD_COLOR + i, PAL[i].name);
-    }
-    AppendMenuW(col, MF_STRING | (custom ? MF_CHECKED : 0), CMD_CUSTOM, L"Custom...");
-
-    AppendMenuW(m, MF_STRING | (g_c.visible ? MF_CHECKED : 0), CMD_TOGGLE, L"Show\tCtrl+Alt+X");
-    AppendMenuW(m, MF_STRING, CMD_SETTINGS, L"Settings...");
-    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)shape, L"Shape");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)col, L"Color");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)NumMenu(CMD_SIZE, SIZES, COUNT(SIZES), g_c.size, L" px"), L"Size");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)NumMenu(CMD_THICK, THICKS, COUNT(THICKS), g_c.thick, L" px"), L"Thickness");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)NumMenu(CMD_GAP, GAPS, COUNT(GAPS), g_c.gap, L" px"), L"Gap");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)NumMenu(CMD_OPACITY, OPACS, COUNT(OPACS), g_c.opacity, L"%"), L"Opacity");
-    AppendMenuW(m, MF_STRING | (g_c.outline ? MF_CHECKED : 0), CMD_OUTLINE, L"Outline");
-    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING | (AutostartOn() ? MF_CHECKED : 0), CMD_AUTOSTART, L"Start with Windows");
-    AppendMenuW(m, MF_STRING, CMD_EXIT, L"Exit");
-
+    AppendMenuW(m, MF_STRING, CMD_QUIT, L"Quit");
     GetCursorPos(&p);
     SetForegroundWindow(g_wnd);
-    TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, p.x, p.y, 0, g_wnd, NULL);
+    if (TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD, p.x, p.y, 0, g_wnd, NULL) == CMD_QUIT)
+        DestroyWindow(g_wnd);
     PostMessageW(g_wnd, WM_NULL, 0, 0);
-    DestroyMenu(m);     /* destroys the submenus too */
+    DestroyMenu(m);
 }
 
 /* -------------------------------------------------------------- commands */
@@ -377,49 +273,10 @@ static void OpenSettings(void)
     ShellExecuteW(NULL, L"open", path, NULL, dir, SW_SHOWNORMAL);
 }
 
-static void OnCommand(int id)
+static void Toggle(void)
 {
-    if (id == CMD_EXIT) {
-        DestroyWindow(g_wnd);
-        return;
-    }
-    if (id == CMD_SETTINGS) {
-        OpenSettings();
-        return;
-    }
-    if (id == CMD_TOGGLE) {
-        g_c.visible ^= 1;
-    } else if (id >= CMD_SHAPE && id < CMD_SHAPE + 3) {
-        int s = g_c.shapes ^ (1 << (id - CMD_SHAPE));
-        if (s) g_c.shapes = s;
-    } else if (id >= CMD_COLOR && id < CMD_COLOR + NPAL) {
-        g_c.color = PAL[id - CMD_COLOR].c;
-    } else if (id == CMD_CUSTOM) {
-        CHOOSECOLORW cc = { sizeof cc };
-        cc.hwndOwner = g_wnd;
-        cc.rgbResult = g_c.color;
-        cc.lpCustColors = g_cust;
-        cc.Flags = CC_RGBINIT | CC_FULLOPEN;
-        if (!ChooseColorW(&cc)) return;
-        g_c.color = cc.rgbResult & 0xFFFFFF;
-    } else if (id == CMD_OUTLINE) {
-        g_c.outline ^= 1;
-    } else if (id == CMD_AUTOSTART) {
-        SetAutostart(!AutostartOn());
-        return;
-    } else if (id >= CMD_SIZE && id < CMD_SIZE + COUNT(SIZES)) {
-        g_c.size = SIZES[id - CMD_SIZE];
-    } else if (id >= CMD_THICK && id < CMD_THICK + COUNT(THICKS)) {
-        g_c.thick = THICKS[id - CMD_THICK];
-    } else if (id >= CMD_GAP && id < CMD_GAP + COUNT(GAPS)) {
-        g_c.gap = GAPS[id - CMD_GAP];
-    } else if (id >= CMD_OPACITY && id < CMD_OPACITY + COUNT(OPACS)) {
-        g_c.opacity = OPACS[id - CMD_OPACITY];
-    } else {
-        return;
-    }
-    SaveCfg();
-    TrayRefreshIcon();
+    g_c.visible ^= 1;
+    SaveVisible();
     Rebuild();
 }
 
@@ -428,20 +285,17 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_TRAY:
         switch (LOWORD(lp)) {
-        case WM_LBUTTONUP: OnCommand(CMD_TOGGLE); break;
+        case WM_LBUTTONUP: OpenSettings(); break;
         case WM_CONTEXTMENU: ShowMenu(); break;
         }
         return 0;
     case WM_HOTKEY:
-        OnCommand(CMD_TOGGLE);
+        Toggle();
         return 0;
     case WM_RELOAD:
         LoadCfg();
         TrayRefreshIcon();
         Rebuild();
-        return 0;
-    case WM_COMMAND:
-        OnCommand(LOWORD(wp));
         return 0;
     case WM_DISPLAYCHANGE:
         Rebuild();

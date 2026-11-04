@@ -70,6 +70,16 @@
             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="16,12">
+                <Grid>
+                    <TextBlock Text="Start with Windows" VerticalAlignment="Center" />
+                    <ToggleSwitch x:Name="StartupSwitch" HorizontalAlignment="Right" OnContent="" OffContent=""
+                                  MinWidth="0" Toggled="OnChanged" />
+                </Grid>
+            </Border>
+
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="16,12">
                 <StackPanel Spacing="8">
                     <TextBlock Text="Nudge from screen center (px)" />
                     <StackPanel Orientation="Horizontal" Spacing="12">
