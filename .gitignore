@@ -1,0 +1,8 @@
+dist/
+dist-installer/
+*.obj
+*.pdb
+*.ini
+settings/bin/
+settings/obj/
+.vs/
