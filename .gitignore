@@ -6,3 +6,5 @@ dist-installer/
 settings/bin/
 settings/obj/
 .vs/
+.DS_Store
+

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * ahm - tiny crosshair overlay.
  *
  * One layered, click-through, topmost window holding a pre-rendered 32-bit
@@ -18,6 +18,14 @@
 #include <shellapi.h>
 #include <math.h>
 #include <wchar.h>
+
+#ifndef MOD_NOREPEAT
+#define MOD_NOREPEAT 0x4000
+#endif
+#ifndef NIN_SELECT
+#define NIN_SELECT (WM_USER + 0)
+#define NIN_KEYSELECT (WM_USER + 1)
+#endif
 
 #define WM_TRAY (WM_APP + 1)
 #define WM_RELOAD (WM_APP + 2)  /* posted by the WinUI settings app after it writes ahm.ini */
@@ -48,21 +56,28 @@ static WCHAR g_exe[MAX_PATH];
 
 /* ---------------------------------------------------------------- config */
 
+static int GetIniInt(const WCHAR *key, int def)
+{
+    WCHAR b[32];
+    if (!GetPrivateProfileStringW(INI_SEC, key, NULL, b, 32, g_ini)) return def;
+    return _wtoi(b);
+}
+
 static void LoadCfg(void)
 {
     int def = RGB(255, 40, 40);
-    g_c.shapes = GetPrivateProfileIntW(INI_SEC, L"Shapes", 3, g_ini);
-    g_c.color = (COLORREF)GetPrivateProfileIntW(INI_SEC, L"Color", def, g_ini);
-    g_c.size = GetPrivateProfileIntW(INI_SEC, L"Size", 12, g_ini);
-    g_c.thick = GetPrivateProfileIntW(INI_SEC, L"Thickness", 2, g_ini);
-    g_c.gap = GetPrivateProfileIntW(INI_SEC, L"Gap", 4, g_ini);
-    g_c.opacity = GetPrivateProfileIntW(INI_SEC, L"Opacity", 100, g_ini);
-    g_c.outline = GetPrivateProfileIntW(INI_SEC, L"Outline", 1, g_ini);
-    g_c.offx = (int)GetPrivateProfileIntW(INI_SEC, L"OffsetX", 0, g_ini);
-    g_c.offy = (int)GetPrivateProfileIntW(INI_SEC, L"OffsetY", 0, g_ini);
-    g_c.visible = GetPrivateProfileIntW(INI_SEC, L"Visible", 1, g_ini);
-    g_c.hkMod = GetPrivateProfileIntW(INI_SEC, L"HotkeyMod", MOD_CONTROL | MOD_ALT, g_ini) & 0xF;
-    g_c.hkVk = GetPrivateProfileIntW(INI_SEC, L"HotkeyVk", 'X', g_ini);
+    g_c.shapes = GetIniInt(L"Shapes", 3);
+    g_c.color = (COLORREF)GetIniInt(L"Color", def);
+    g_c.size = GetIniInt(L"Size", 12);
+    g_c.thick = GetIniInt(L"Thickness", 2);
+    g_c.gap = GetIniInt(L"Gap", 4);
+    g_c.opacity = GetIniInt(L"Opacity", 100);
+    g_c.outline = GetIniInt(L"Outline", 1);
+    g_c.offx = GetIniInt(L"OffsetX", 0);
+    g_c.offy = GetIniInt(L"OffsetY", 0);
+    g_c.visible = GetIniInt(L"Visible", 1);
+    g_c.hkMod = GetIniInt(L"HotkeyMod", MOD_CONTROL | MOD_ALT) & 0xF;
+    g_c.hkVk = GetIniInt(L"HotkeyVk", 'X');
 
     if (g_c.hkVk < 1 || g_c.hkVk > 254) { g_c.hkMod = MOD_CONTROL | MOD_ALT; g_c.hkVk = 'X'; }
     if (g_c.shapes < 1 || g_c.shapes > 7) g_c.shapes = 3;
@@ -86,13 +101,14 @@ static void SaveVisible(void)
  * whether Windows accepted it (HotkeyError=1 when another app owns it). */
 static void RegisterHk(void)
 {
-    static int curMod = -1, curVk = -1;
+    static int curMod = -1, curVk = -1, lastOk = 0;
     int ok;
-    if (g_c.hkMod == curMod && g_c.hkVk == curVk) return;
+    if (g_c.hkMod == curMod && g_c.hkVk == curVk && lastOk) return;
     UnregisterHotKey(g_wnd, ID_HOTKEY);
     ok = RegisterHotKey(g_wnd, ID_HOTKEY, g_c.hkMod | MOD_NOREPEAT, g_c.hkVk);
     curMod = g_c.hkMod;
     curVk = g_c.hkVk;
+    lastOk = ok;
     WritePrivateProfileStringW(INI_SEC, L"HotkeyError", ok ? L"0" : L"1", g_ini);
 }
 
@@ -157,10 +173,15 @@ static void Render(void)
 
 static void Rebuild(void)
 {
-    int W = 2 * (g_c.size + 3) + 1;
+    int maxR = g_c.size;
+    int dotR = (int)(g_c.thick * 0.75f + 2.0f);
+    int W;
     POINT pt, src = { 0, 0 };
     SIZE sz;
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 0, AC_SRC_ALPHA };
+
+    if (dotR > maxR) maxR = dotR;
+    W = 2 * (maxR + 3) + 1;
 
     if (W != g_w) {
         BITMAPINFO bi = { { sizeof(BITMAPINFOHEADER), 0, 0, 1, 32, BI_RGB } };
@@ -202,11 +223,14 @@ static HICON MakeIcon(COLORREF col)
     ICONINFO ii;
     HICON icon;
     DWORD fg = 0xFF000000u | (GetRValue(col) << 16) | (GetGValue(col) << 8) | GetBValue(col);
+    int pitch = ((n + 31) / 32) * 4;
+    BYTE *mb = (BYTE *)calloc(1, pitch * n);
 
     bi.bmiHeader.biWidth = n;
     bi.bmiHeader.biHeight = -n;
     color = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&px, NULL, 0);
-    mask = CreateBitmap(n, n, 1, 1, NULL);
+    mask = CreateBitmap(n, n, 1, 1, mb);
+    free(mb);
 
     for (y = 0; y < n; y++) {
         for (x = 0; x < n; x++) {
@@ -303,8 +327,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_TRAY:
         switch (LOWORD(lp)) {
-        case WM_LBUTTONUP: OpenSettings(); break;
-        case WM_CONTEXTMENU: ShowMenu(); break;
+        case WM_LBUTTONUP:
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+            OpenSettings();
+            break;
+        case WM_CONTEXTMENU:
+            ShowMenu();
+            break;
         }
         return 0;
     case WM_HOTKEY:
@@ -343,12 +373,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     MSG msg;
     WCHAR *slash;
     HANDLE mutex;
+    typedef BOOL (WINAPI *SetDpiContextFn)(void *);
+    HMODULE user32;
+    SetDpiContextFn setDpi;
     (void)prev; (void)cmd; (void)show;
 
     mutex = CreateMutexW(NULL, TRUE, L"Local\\ahm.single.instance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
 
-    SetProcessDPIAware();
+    user32 = GetModuleHandleW(L"user32.dll");
+    setDpi = user32 ? (SetDpiContextFn)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : NULL;
+    if (setDpi) setDpi((void *)(LONG_PTR)-4); /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+    else SetProcessDPIAware();
 
     GetModuleFileNameW(NULL, g_exe, MAX_PATH);
     lstrcpyW(g_ini, g_exe);
@@ -384,5 +420,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (g_bmp) { SelectObject(g_mem, g_oldbmp); DeleteObject(g_bmp); }
     DeleteDC(g_mem);
     ReleaseMutex(mutex);
+    CloseHandle(mutex);
     return (int)msg.wParam;
 }

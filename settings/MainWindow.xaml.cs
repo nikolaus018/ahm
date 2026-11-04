@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
@@ -35,7 +35,7 @@ public sealed partial class MainWindow : Window
     };
 
     [DllImport("kernel32", CharSet = CharSet.Unicode)]
-    static extern int GetPrivateProfileInt(string sec, string key, int def, string file);
+    static extern uint GetPrivateProfileString(string sec, string key, string def, System.Text.StringBuilder ret, uint size, string file);
     [DllImport("kernel32", CharSet = CharSet.Unicode)]
     static extern bool WritePrivateProfileString(string sec, string key, string val, string file);
     [DllImport("user32", CharSet = CharSet.Unicode)]
@@ -61,7 +61,8 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
 
-        double scale = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0;
+        uint dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        double scale = (dpi > 0 ? dpi : 96) / 96.0;
         AppWindow.Resize(new SizeInt32((int)(900 * scale), (int)(680 * scale)));
         if (AppWindow.Presenter is OverlappedPresenter p)
         {
@@ -77,7 +78,7 @@ public sealed partial class MainWindow : Window
                 CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(2),
                 Background = new SolidColorBrush(c), Tag = c,
             };
-            b.Click += (_, _) => { _color = c; Apply(); };
+            b.Click += (_, _) => { _color = c; Picker.Color = c; Apply(); };
             _swatches.Add(b);
             Swatches.Children.Add(b);
         }
@@ -85,9 +86,34 @@ public sealed partial class MainWindow : Window
         Load();
         _loading = false;
         Refresh();
+
+        if (Get("HotkeyError", 0) != 0)
+        {
+            HotkeyInfo.Message = $"{HotkeyText()} is already used by another app. Pick a different one.";
+            HotkeyInfo.IsOpen = true;
+        }
+
+        Activated += (_, args) =>
+        {
+            if (args.WindowActivationState != WindowActivationState.Deactivated && !_loading)
+            {
+                bool v = Get("Visible", 1) != 0;
+                if (VisibleSwitch.IsOn != v)
+                {
+                    _loading = true;
+                    VisibleSwitch.IsOn = v;
+                    _loading = false;
+                }
+            }
+        };
     }
 
-    static int Get(string key, int def) => GetPrivateProfileInt(Section, key, def, Ini);
+    static int Get(string key, int def)
+    {
+        var sb = new System.Text.StringBuilder(32);
+        GetPrivateProfileString(Section, key, "", sb, (uint)sb.Capacity, Ini);
+        return int.TryParse(sb.ToString(), out int v) ? v : def;
+    }
     static void Put(string key, int v) => WritePrivateProfileString(Section, key, v.ToString(), Ini);
 
     void Load()
@@ -136,13 +162,20 @@ public sealed partial class MainWindow : Window
         if (!double.IsNaN(OffXBox.Value)) Put("OffsetX", (int)OffXBox.Value);
         if (!double.IsNaN(OffYBox.Value)) Put("OffsetY", (int)OffYBox.Value);
 
-        using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
+        try
         {
-            if (StartupSwitch.IsOn)
-                run.SetValue("ahm", $"\"{System.IO.Path.Combine(AppContext.BaseDirectory, "ahm.exe")}\"");
-            else
-                run.DeleteValue("ahm", throwOnMissingValue: false);
+            using var run = Registry.CurrentUser.CreateSubKey(RunKey);
+            if (run != null)
+            {
+                string exePath = $"\"{System.IO.Path.Combine(AppContext.BaseDirectory, "ahm.exe")}\"";
+                string? current = run.GetValue("ahm") as string;
+                if (StartupSwitch.IsOn && current != exePath)
+                    run.SetValue("ahm", exePath);
+                else if (!StartupSwitch.IsOn && current != null)
+                    run.DeleteValue("ahm", throwOnMissingValue: false);
+            }
         }
+        catch { }
 
         IntPtr overlay = FindWindow("ahm_overlay", null);
         if (overlay != IntPtr.Zero) PostMessage(overlay, WM_RELOAD, IntPtr.Zero, IntPtr.Zero);
@@ -335,6 +368,7 @@ public sealed partial class MainWindow : Window
         GapSlider.Value = 4;
         OpacitySlider.Value = 100;
         OutlineSwitch.IsOn = true;
+        VisibleSwitch.IsOn = true;
         OffXBox.Value = 0;
         OffYBox.Value = 0;
         _hkMod = DefaultHkMod;
