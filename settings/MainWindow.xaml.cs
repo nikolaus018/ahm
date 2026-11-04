@@ -1,14 +1,18 @@
 ﻿using System.Runtime.InteropServices;
 using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Microsoft.Win32;
 using Windows.Graphics;
+using Windows.System;
 using Windows.UI;
+using Windows.UI.Core;
 
 namespace AhmSettings;
 
@@ -41,7 +45,11 @@ public sealed partial class MainWindow : Window
     [DllImport("user32")]
     static extern uint GetDpiForWindow(IntPtr hwnd);
 
+    const int DefaultHkMod = 3, DefaultHkVk = 0x58;   // Ctrl+Alt+X; mods are Win32 MOD_* (Alt 1, Ctrl 2, Shift 4, Win 8)
+
     bool _loading = true;
+    bool _capturing;
+    int _hkMod = DefaultHkMod, _hkVk = DefaultHkVk, _hkSent = -1;
     Color _color = Palette[0];
     readonly List<Button> _swatches = new();
 
@@ -103,6 +111,9 @@ public sealed partial class MainWindow : Window
             StartupSwitch.IsOn = run?.GetValue("ahm") != null;
         OffXBox.Value = Get("OffsetX", 0);
         OffYBox.Value = Get("OffsetY", 0);
+        _hkMod = Get("HotkeyMod", DefaultHkMod) & 0xF;
+        _hkVk = Get("HotkeyVk", DefaultHkVk);
+        _hkSent = _hkMod << 8 | _hkVk;
     }
 
     void Apply()
@@ -120,6 +131,8 @@ public sealed partial class MainWindow : Window
         Put("Opacity", (int)OpacitySlider.Value);
         Put("Outline", OutlineSwitch.IsOn ? 1 : 0);
         Put("Visible", VisibleSwitch.IsOn ? 1 : 0);
+        Put("HotkeyMod", _hkMod);
+        Put("HotkeyVk", _hkVk);
         if (!double.IsNaN(OffXBox.Value)) Put("OffsetX", (int)OffXBox.Value);
         if (!double.IsNaN(OffYBox.Value)) Put("OffsetY", (int)OffYBox.Value);
 
@@ -134,6 +147,91 @@ public sealed partial class MainWindow : Window
         IntPtr overlay = FindWindow("ahm_overlay", null);
         if (overlay != IntPtr.Zero) PostMessage(overlay, WM_RELOAD, IntPtr.Zero, IntPtr.Zero);
         Refresh();
+
+        int hk = _hkMod << 8 | _hkVk;
+        if (hk != _hkSent)
+        {
+            _hkSent = hk;
+            _ = CheckHotkeyAsync();
+        }
+    }
+
+    // The overlay records whether Windows accepted the hotkey; show a warning if another app owns it.
+    async Task CheckHotkeyAsync()
+    {
+        await Task.Delay(300);
+        bool taken = Get("HotkeyError", 0) != 0;
+        HotkeyInfo.Message = taken ? $"{HotkeyText()} is already used by another app. Pick a different one." : "";
+        HotkeyInfo.IsOpen = taken;
+    }
+
+    // ---- hotkey capture ---------------------------------------------------
+
+    static string KeyName(int vk) => (VirtualKey)vk switch
+    {
+        >= VirtualKey.Number0 and <= VirtualKey.Number9 => ((char)('0' + (vk - (int)VirtualKey.Number0))).ToString(),
+        >= VirtualKey.NumberPad0 and <= VirtualKey.NumberPad9 => "Num " + (vk - (int)VirtualKey.NumberPad0),
+        VirtualKey.Back => "Backspace",
+        VirtualKey.Escape => "Esc",
+        VirtualKey.Insert => "Ins",
+        VirtualKey.Delete => "Del",
+        VirtualKey.PageUp => "PgUp",
+        VirtualKey.PageDown => "PgDn",
+        var k => k.ToString(),
+    };
+
+    string HotkeyText()
+    {
+        var parts = new List<string>();
+        if ((_hkMod & 2) != 0) parts.Add("Ctrl");
+        if ((_hkMod & 1) != 0) parts.Add("Alt");
+        if ((_hkMod & 4) != 0) parts.Add("Shift");
+        if ((_hkMod & 8) != 0) parts.Add("Win");
+        parts.Add(KeyName(_hkVk));
+        return string.Join(" + ", parts);
+    }
+
+    static bool IsDown(VirtualKey k) =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(k).HasFlag(CoreVirtualKeyStates.Down);
+
+    void OnHotkeyClick(object sender, RoutedEventArgs e)
+    {
+        _capturing = true;
+        HotkeyBtn.Content = "Press keys...";
+    }
+
+    void OnHotkeyLostFocus(object sender, RoutedEventArgs e)
+    {
+        _capturing = false;
+        Refresh();
+    }
+
+    void OnHotkeyKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (!_capturing) return;
+        e.Handled = true;
+
+        VirtualKey key = e.Key;
+        if (key is VirtualKey.Control or VirtualKey.Shift or VirtualKey.Menu or VirtualKey.LeftControl or VirtualKey.RightControl
+            or VirtualKey.LeftShift or VirtualKey.RightShift or VirtualKey.LeftMenu or VirtualKey.RightMenu
+            or VirtualKey.LeftWindows or VirtualKey.RightWindows)
+            return;                                   // wait for the actual key
+        if (key == VirtualKey.Escape) { _capturing = false; Refresh(); return; }
+
+        int mod = (IsDown(VirtualKey.Control) ? 2 : 0) | (IsDown(VirtualKey.Menu) ? 1 : 0) |
+                  (IsDown(VirtualKey.Shift) ? 4 : 0) |
+                  (IsDown(VirtualKey.LeftWindows) || IsDown(VirtualKey.RightWindows) ? 8 : 0);
+        bool fKey = key >= VirtualKey.F1 && key <= VirtualKey.F24;
+        if (mod == 0 && !fKey)
+        {
+            HotkeyBtn.Content = "Needs Ctrl/Alt/Shift";   // a bare letter would block typing everywhere
+            return;
+        }
+
+        _hkMod = mod;
+        _hkVk = (int)key;
+        _capturing = false;
+        Apply();
     }
 
     // ---- UI refresh (labels, swatch selection, preview) -------------------
@@ -144,6 +242,7 @@ public sealed partial class MainWindow : Window
         ThickVal.Text = $"{(int)ThickSlider.Value} px";
         GapVal.Text = $"{(int)GapSlider.Value} px";
         OpacityVal.Text = $"{(int)OpacitySlider.Value}%";
+        if (!_capturing) HotkeyBtn.Content = HotkeyText();
 
         var on = (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
         foreach (Button b in _swatches)
@@ -238,6 +337,8 @@ public sealed partial class MainWindow : Window
         OutlineSwitch.IsOn = true;
         OffXBox.Value = 0;
         OffYBox.Value = 0;
+        _hkMod = DefaultHkMod;
+        _hkVk = DefaultHkVk;
         _loading = false;
         Apply();
     }

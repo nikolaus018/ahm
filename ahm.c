@@ -5,7 +5,7 @@
  * premultiplied bitmap. The image is drawn only when a setting changes, so
  * the process is completely idle (blocked in GetMessage) the rest of the time.
  * The tray icon opens the WinUI settings app on left click and offers "Quit"
- * on right click; Ctrl+Alt+X toggles the crosshair globally.
+ * on right click; a configurable global hotkey (default Ctrl+Alt+X) toggles the crosshair.
  */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
@@ -31,6 +31,7 @@ typedef struct {
     COLORREF color;
     int size, thick, gap, opacity;
     int outline, offx, offy, visible;
+    int hkMod, hkVk;    /* toggle hotkey: MOD_* flags + virtual key */
 } Cfg;
 
 static Cfg g_c;
@@ -60,7 +61,10 @@ static void LoadCfg(void)
     g_c.offx = (int)GetPrivateProfileIntW(INI_SEC, L"OffsetX", 0, g_ini);
     g_c.offy = (int)GetPrivateProfileIntW(INI_SEC, L"OffsetY", 0, g_ini);
     g_c.visible = GetPrivateProfileIntW(INI_SEC, L"Visible", 1, g_ini);
+    g_c.hkMod = GetPrivateProfileIntW(INI_SEC, L"HotkeyMod", MOD_CONTROL | MOD_ALT, g_ini) & 0xF;
+    g_c.hkVk = GetPrivateProfileIntW(INI_SEC, L"HotkeyVk", 'X', g_ini);
 
+    if (g_c.hkVk < 1 || g_c.hkVk > 254) { g_c.hkMod = MOD_CONTROL | MOD_ALT; g_c.hkVk = 'X'; }
     if (g_c.shapes < 1 || g_c.shapes > 7) g_c.shapes = 3;
     if (g_c.size < 2) g_c.size = 2; else if (g_c.size > 200) g_c.size = 200;
     if (g_c.thick < 1) g_c.thick = 1; else if (g_c.thick > 20) g_c.thick = 20;
@@ -76,6 +80,20 @@ static void SaveVisible(void)
     WCHAR b[4];
     wsprintfW(b, L"%d", g_c.visible);
     WritePrivateProfileStringW(INI_SEC, L"Visible", b, g_ini);
+}
+
+/* (Re)registers the toggle hotkey when it changed and tells the settings app
+ * whether Windows accepted it (HotkeyError=1 when another app owns it). */
+static void RegisterHk(void)
+{
+    static int curMod = -1, curVk = -1;
+    int ok;
+    if (g_c.hkMod == curMod && g_c.hkVk == curVk) return;
+    UnregisterHotKey(g_wnd, ID_HOTKEY);
+    ok = RegisterHotKey(g_wnd, ID_HOTKEY, g_c.hkMod | MOD_NOREPEAT, g_c.hkVk);
+    curMod = g_c.hkMod;
+    curVk = g_c.hkVk;
+    WritePrivateProfileStringW(INI_SEC, L"HotkeyError", ok ? L"0" : L"1", g_ini);
 }
 
 /* ------------------------------------------------------------- rendering */
@@ -294,6 +312,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_RELOAD:
         LoadCfg();
+        RegisterHk();
         TrayRefreshIcon();
         Rebuild();
         return 0;
@@ -353,7 +372,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     g_taskbarMsg = RegisterWindowMessageW(L"TaskbarCreated");
     g_icon = MakeIcon(g_c.color);
     TrayAdd();
-    RegisterHotKey(g_wnd, ID_HOTKEY, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'X');
+    RegisterHk();
     Rebuild();
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {

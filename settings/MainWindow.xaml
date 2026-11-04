@@ -56,13 +56,23 @@
                     <Grid>
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="Show crosshair" />
-                            <TextBlock Text="Hotkey  Ctrl + Alt + X" Style="{StaticResource CaptionTextBlockStyle}"
+                            <TextBlock Text="Toggle with a global hotkey" Style="{StaticResource CaptionTextBlockStyle}"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         </StackPanel>
                         <ToggleSwitch x:Name="VisibleSwitch" HorizontalAlignment="Right" OnContent="" OffContent=""
                                       MinWidth="0" Toggled="OnChanged" />
                     </Grid>
                 </Border>
+
+                <Border Style="{StaticResource Card}">
+                    <Grid>
+                        <TextBlock Text="Hotkey" VerticalAlignment="Center" />
+                        <Button x:Name="HotkeyBtn" HorizontalAlignment="Right" MinWidth="150"
+                                Click="OnHotkeyClick" KeyDown="OnHotkeyKeyDown" LostFocus="OnHotkeyLostFocus" />
+                    </Grid>
+                </Border>
+                <InfoBar x:Name="HotkeyInfo" IsOpen="False" IsClosable="False" Severity="Warning" />
+
             </StackPanel>
 
             <!-- right: controls -->
