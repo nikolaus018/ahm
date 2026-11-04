@@ -5,14 +5,14 @@ cd /d "%~dp0"
 if not exist dist mkdir dist
 
 where cl >nul 2>nul
-if errorlevel 1 (
-    set "VSW=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-    if exist "%VSW%" (
-        for /f "usebackq delims=" %%i in (`"%VSW%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-            call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul
-        )
-    )
-)
+if not errorlevel 1 goto :havecl
+set "VSW=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSW%" goto :havecl
+"%VSW%" -latest -products * -property installationPath > "%TEMP%\ahm-vsp.txt"
+set /p VSP=<"%TEMP%\ahm-vsp.txt"
+del "%TEMP%\ahm-vsp.txt"
+call "%VSP%\VC\Auxiliary\Build\vcvars64.bat" >nul
+:havecl
 
 where cl >nul 2>nul
 if not errorlevel 1 (
