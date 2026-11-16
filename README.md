@@ -1,9 +1,11 @@
 ﻿# ahm
 
-Tiny crosshair overlay for Windows, shipped as one product: a single installer containing the overlay and a WinUI 3 settings app.
+Low-resource crosshair overlay for Windows. One installer ships two executables:
 
-- **`ahm.exe`** - plain Win32 (C, no runtime deps). One layered, click-through, topmost window with a pre-rendered bitmap; it redraws only when a setting changes, so idle CPU is 0. Lives in the tray: left click opens the settings app, right click offers *Quit*. Customizable global hotkey (default `Ctrl+Alt+X`) toggles the crosshair.
-- **`ahm-settings.exe`** - WinUI 3 (Mica, Fluent controls). The only settings screen (including *Start with Windows*). Opened by left-clicking the tray icon, it edits `ahm.ini` and the overlay updates live. It exits when closed, so the XAML runtime never sits in memory.
+| Component | Stack | Behaviour |
+|---|---|---|
+| `ahm.exe` | Win32, C, no runtime dependencies | A single layered, click-through, topmost window showing a pre-rendered bitmap. It redraws only when a setting changes, so idle CPU use is zero. Runs in the tray (left click opens settings, right click offers *Quit*). A configurable global hotkey (default `Ctrl+Alt+X`) toggles the crosshair. |
+| `ahm-settings.exe` | WinUI 3 (Mica, Fluent controls) | The only settings screen, including *Start with Windows*. Edits `ahm.ini` and the overlay updates live. It exits when closed, so the XAML runtime does not stay in memory. |
 
 Games must be windowed or borderless; exclusive fullscreen hides overlays.
 
