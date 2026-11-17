@@ -17,6 +17,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <math.h>
+#include <stdlib.h>
 #include <wchar.h>
 
 #ifndef MOD_NOREPEAT
@@ -185,13 +186,18 @@ static void Rebuild(void)
 
     if (W != g_w) {
         BITMAPINFO bi = { { sizeof(BITMAPINFOHEADER), 0, 0, 1, 32, BI_RGB } };
+        DWORD *bits = NULL;
+        HBITMAP bmp;
         bi.bmiHeader.biWidth = W;
         bi.bmiHeader.biHeight = -W;
+        bmp = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+        if (!bmp) return;                       /* keep the previous image */
         if (g_bmp) {
             SelectObject(g_mem, g_oldbmp);
             DeleteObject(g_bmp);
         }
-        g_bmp = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&g_bits, NULL, 0);
+        g_bmp = bmp;
+        g_bits = bits;
         g_oldbmp = (HBITMAP)SelectObject(g_mem, g_bmp);
         g_w = W;
     }
@@ -224,13 +230,19 @@ static HICON MakeIcon(COLORREF col)
     HICON icon;
     DWORD fg = 0xFF000000u | (GetRValue(col) << 16) | (GetGValue(col) << 8) | GetBValue(col);
     int pitch = ((n + 31) / 32) * 4;
-    BYTE *mb = (BYTE *)calloc(1, pitch * n);
+    BYTE *mb = (BYTE *)calloc(1, (size_t)pitch * n);
 
+    if (!mb) return NULL;
     bi.bmiHeader.biWidth = n;
     bi.bmiHeader.biHeight = -n;
     color = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&px, NULL, 0);
     mask = CreateBitmap(n, n, 1, 1, mb);
     free(mb);
+    if (!color || !mask) {
+        if (color) DeleteObject(color);
+        if (mask) DeleteObject(mask);
+        return NULL;
+    }
 
     for (y = 0; y < n; y++) {
         for (x = 0; x < n; x++) {
@@ -271,8 +283,9 @@ static void TrayAdd(void)
 
 static void TrayRefreshIcon(void)
 {
-    HICON old = g_icon;
-    g_icon = MakeIcon(g_c.color);
+    HICON old = g_icon, icon = MakeIcon(g_c.color);
+    if (!icon) return;
+    g_icon = icon;
     g_nid.hIcon = g_icon;
     g_nid.uFlags = NIF_ICON;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
@@ -285,13 +298,17 @@ static void ShowMenu(void)
     HMENU m = CreatePopupMenu();
     POINT p;
 
+    int cmd;
+
+    if (!m) return;
     AppendMenuW(m, MF_STRING, CMD_QUIT, L"Quit");
     GetCursorPos(&p);
     SetForegroundWindow(g_wnd);
-    if (TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD, p.x, p.y, 0, g_wnd, NULL) == CMD_QUIT)
-        DestroyWindow(g_wnd);
+    cmd = TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD, p.x, p.y, 0, g_wnd, NULL);
     PostMessageW(g_wnd, WM_NULL, 0, 0);
     DestroyMenu(m);
+    if (cmd == CMD_QUIT)
+        DestroyWindow(g_wnd);
 }
 
 /* -------------------------------------------------------------- commands */
@@ -326,8 +343,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_TRAY:
+        /* NOTIFYICON_VERSION_4 sends WM_LBUTTONUP *and* NIN_SELECT for one
+         * click; reacting to both started the settings app twice. */
         switch (LOWORD(lp)) {
-        case WM_LBUTTONUP:
         case NIN_SELECT:
         case NIN_KEYSELECT:
             OpenSettings();
@@ -348,6 +366,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_DISPLAYCHANGE:
         Rebuild();
+        return 0;
+    case WM_ENDSESSION:                         /* logoff / installer restart manager */
+        if (wp) DestroyWindow(h);
         return 0;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;

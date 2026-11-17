@@ -36,6 +36,8 @@ Name: "{autoprograms}\ahm settings"; Filename: "{app}\ahm-settings.exe"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ahm"; ValueData: """{app}\ahm.exe"""; Flags: uninsdeletevalue; Tasks: startup
+; "Start with Windows" can also be turned on later from the settings app; always remove it on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ahm"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 Filename: "{app}\ahm.exe"; Description: "Launch ahm"; Flags: nowait postinstall skipifsilent
